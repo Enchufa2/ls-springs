@@ -1,0 +1,12 @@
+name: ls-springs
+title: ls-springs
+username:
+account: enchufa2
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 3361800
+bundleId: 3951434
+url: https://enchufa2.shinyapps.io/ls-springs/
+when: 1607282263.18589
+asMultiple: FALSE
+asStatic: FALSE
