@@ -18,20 +18,20 @@ library(DT)
 library(gifski)
 options(warn=-1)
 
-generate_data <- function(n, sigma, type=c("reg", "pca"), seed=NULL) {
+generate_data <- function(n, sigma, seed=NULL) {
   if (!is.null(seed)) set.seed(seed)
   
   X <- mvtnorm::rmvnorm(n, sigma=sigma)
-  X <- scale(X, scale=FALSE)
-  
-  attr(X, "slope") <- if (match.arg(type) == "reg") {
+  scale(X, scale=FALSE)
+}
+
+get_slope <- function(X, type=c("reg", "pca")) {
+  if (match.arg(type) == "reg") {
     unname(coef(lm.fit(X[, 1, drop=FALSE], X[, 2])))
   } else {
     pca <- prcomp(X)
     unname(pca$rotation[2, 1]/pca$rotation[1, 1])
   }
-  
-  X
 }
 
 get_projection <- function(X, alpha, type=c("reg", "pca")) {
@@ -49,7 +49,7 @@ get_frame <- function(X, z, alpha, t) {
 generate_frames <- function(X, alpha, type=c("reg", "pca"), loss=0.07,
                             inertia=40, tol=1, max.iter=500)
 {
-  deg <- atan(attr(X, "slope")) * 180/pi
+  deg <- atan(get_slope(X, type)) * 180/pi
   omega <- 0
   dfl <- list()
   
@@ -111,13 +111,13 @@ observeEvent(input$sigma_cell_edit, {
 o <- reactive({
   req(input$n, sigma(), input$type, input$seed, input$alpha, input$loss, input$inertia)
   
-  X <- generate_data(input$n, as.matrix(sigma()), input$type, input$seed)
+  X <- generate_data(input$n, as.matrix(sigma()), input$seed)
   o <- list(data = generate_frames(
     X, input$alpha, input$type, input$loss/100, input$inertia))
   
   o$xlim <- range(o$data$V1)
   o$ylim <- range(o$data$V2)
-  o$slope <- attr(X, "slope")
+  o$slope <- get_slope(X, input$type)
   o$deg <- atan(o$slope) * 180/pi
   
   o$oscil <- unique(o$data[, c("alpha", "t")])
