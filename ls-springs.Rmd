@@ -34,37 +34,47 @@ get_slope <- function(X, type=c("reg", "pca")) {
   }
 }
 
-get_projection <- function(X, alpha, type=c("reg", "pca")) {
-  w <- c(cos(alpha * pi/180), sin(alpha * pi/180))
-  if (match.arg(type) == "reg")
-    cbind(X[, 1], w[2] * X[, 1] / w[1])
-  else X %*% w %*% w
+get_projection <- function(X, pos, type=c("reg", "pca")) {
+  w <- c(cos(pos[2] * pi/180), sin(pos[2] * pi/180))
+  
+  if (match.arg(type) == "reg") {
+    z <- cbind(X[, 1], w[2] * X[, 1] / w[1])
+    z[, 2] <- z[, 2] + pos[1]
+  } else {
+    z <- X %*% w %*% w
+    z[, 1] <- z[, 1] - pos[1] * w[2]
+    z[, 2] <- z[, 2] + pos[1] * w[1]
+  }
+  
+  z
 }
 
-get_frame <- function(X, z, alpha, t) {
-  d <- sqrt(rowSums((X - z)^2))
-  cbind(as.data.frame(X), xend=z[, 1], yend=z[, 2], alpha=alpha, d=d, t=t)
+get_frame <- function(X, z, pos, t) {
+  colnames(z) <- c("xend", "yend")
+  names(pos) <- c("cm", "alpha")
+  cbind(as.data.frame(X), z, t(pos), d=sqrt(rowSums((X - z)^2)), t=t)
 }
 
-generate_frames <- function(X, alpha, type=c("reg", "pca"), loss=0.07,
-                            inertia=40, tol=1, max.iter=500)
+generate_frames <- function(X, pos, type=c("reg", "pca"), loss=0.07,
+                            inertia=40, tol=c(0.1, 1), max.iter=500)
 {
-  deg <- atan(get_slope(X, type)) * 180/pi
-  omega <- 0
+  rest <- c(0, atan(get_slope(X, type)) * 180/pi)
+  v <- c(0, 0)
   dfl <- list()
+  X <- rbind(c(0, 0), X)
   
   for (t in seq_len(max.iter)) {
-    z <- get_projection(X, alpha, type)
-    dfl[[t]] <- get_frame(X, z, alpha, t)
-  
-    M <- sum((z %*% matrix(c(0, -1, 1, 0), ncol=2)) * (X - z))
-    omega <- (omega + M) * (1 - loss)
-    alpha <- alpha + omega / inertia
-  
-    if (abs(omega) < tol && abs(alpha%%360 - deg) < tol) {
-      alpha <- deg + 360 * alpha%/%360
-      z <- get_projection(X, alpha, type)
-      dfl[[t+1]] <- get_frame(X, z, alpha, t+1)
+    z <- get_projection(X, pos, type)
+    dfl[[t]] <- get_frame(X, z, pos, t)
+    
+    m <- c(-pos[1], sum((z %*% matrix(c(0, -1, 1, 0), ncol=2)) * (X - z)))
+    v <- (v + m) * (1 - loss)
+    pos <- pos + v / inertia
+    
+    if (all(abs(v) < tol) && all(abs(pos %% c(Inf, 360) - rest) < tol)) {
+      pos <- c(rest[1], rest[2] + 360 * pos[2] %/% 360)
+      z <- get_projection(X, pos, type)
+      dfl[[t+1]] <- get_frame(X, z, pos, t+1)
       break
     }
   }
@@ -96,6 +106,7 @@ output$sigma <- renderDT(datatable(
 br()
 sliderInput("n", "Number of samples", 10, 100, 50, step=10, width="100%")
 sliderInput("alpha", "Initial angle:", -85, 85, -45, step=5, width="100%")
+sliderInput("cm", "Initial shift:", -3, 3, 1, step=0.5, width="100%")
 sliderInput("loss", "Velocity loss:", 5, 30, 7, step=1, post=" %", width="100%")
 sliderInput("inertia", "Inertia:", 10, 400, 40, step=10, width="100%")
 numericInput("seed", "Seed:", 42, min=0, width="100%")
@@ -113,19 +124,28 @@ o <- reactive({
   
   X <- generate_data(input$n, as.matrix(sigma()), input$seed)
   o <- list(data = generate_frames(
-    X, input$alpha, input$type, input$loss/100, input$inertia))
+    X, c(input$cm, input$alpha), input$type, input$loss/100, input$inertia))
   
   o$xlim <- range(o$data$V1)
   o$ylim <- range(o$data$V2)
   o$slope <- get_slope(X, input$type)
   o$deg <- atan(o$slope) * 180/pi
   
-  o$oscil <- unique(o$data[, c("alpha", "t")])
+  o$oscil <- unique(o$data[, c("t", "cm", "alpha")])
+  o$oscil$intercept <- o$oscil$cm
+  if (input$type == "pca")
+    o$oscil$intercept <- o$oscil$intercept / cos(o$oscil$alpha * pi/180)
+  
   o$alpha <- data.frame(alpha=o$deg, t=c(-10, max(o$data$t) + 10))
+  o$cm <- data.frame(cm=0, t=c(-10, max(o$data$t) + 10))
   o$line <- data.frame(
     V1=10 * o$xlim, V2=o$slope * 10 * o$xlim, t=rep(unique(o$data$t), each=2))
   o$shad <- data.frame(alpha=o$deg, t=unique(o$data$t))
-  o$zero <- data.frame(V1=0, V2=0, t=unique(o$data$t))
+  
+  cm.idx <- with(o$data, V1 == 0 & V2 == 0)
+  o$zero <- subset(o$data, cm.idx, c("xend", "yend", "t"))
+  colnames(o$zero) <- c("V1", "V2", "t")
+  o$data <- subset(o$data, !cm.idx, c("V1", "V2", "xend", "yend", "d", "t"))
   
   o
 })
@@ -154,14 +174,23 @@ renderPlotly({
     add_markers(frame=~t, size=1, color=I("white"),
                 marker=list(line=list(color=I("black"))))
   
-  subplot(p1, p2, margin=0.05) %>%
+  p3 <- plot_ly(x=~t, y=~cm) %>%
+    add_lines(color=I("lightgray"), data=o$cm) %>%
+    add_lines(color=I("black"), data=o$oscil) %>%
+    add_markers(frame=~t, size=1, color=I("white"),
+                marker=list(line=list(color=I("black"))))
+  
+  s1 <- subplot(p2, p3, nrows=2, shareX=TRUE)
+  subplot(p1, s1, margin=0.05) %>%
     config(displayModeBar=FALSE) %>%
     animation_opts(frame=40, redraw=FALSE) %>%
     layout(
       xaxis=list(title="V1", range=o$xlim + 0.5*c(-1, 1)),
       yaxis=list(title="V2", range=o$ylim + 0.5*c(-1, 1)),
       xaxis2=list(title="t", range=c(-1, max(o$data$t) + 1)),
-      yaxis2=list(title="angle"),
+      yaxis2=list(title="center of mass"),
+      xaxis3=list(title="t", range=c(-1, max(o$data$t) + 1)),
+      yaxis3=list(title="angle"),
       showlegend=FALSE
     )
 })
@@ -181,7 +210,7 @@ renderImage({
     geom_abline(aes(intercept=0, slope=tan(alpha*pi/180)), o$shad, alpha=0.3) +
     geom_segment(aes(xend=xend, yend=yend, alpha=d), color="darkgray", size=2) +
     geom_point() +
-    geom_abline(aes(intercept=0, slope=tan(alpha*pi/180)), o$oscil, color="blue") +
+    geom_abline(aes(intercept=intercept, slope=tan(alpha*pi/180)), o$oscil, color="blue") +
     geom_point(data=o$zero, size=2, fill="white", shape=21) +
     transition_time(t)
 
